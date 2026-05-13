@@ -13,6 +13,7 @@ import {
   triggerWeixinChannelReload,
   clearStaleAccountsForUserId,
   DEFAULT_BASE_URL,
+  ensureAgentAndBindingForWeixinAccount,
 } from "./auth/accounts.js";
 import type { ResolvedWeixinAccount } from "./auth/accounts.js";
 import { assertSessionActive } from "./api/session-guard.js";
@@ -101,6 +102,12 @@ function resolveOutboundAccountId(
     `(${allIds.length} accounts registered, none has an active session with this recipient). ` +
     `Specify accountId in the delivery config, or ensure the recipient has recently messaged the bot.`,
   );
+}
+
+function isAutoProvisionAgentEnabled(cfg: OpenClawConfig | undefined): boolean {
+  if (!cfg) return false;
+  const section = cfg.channels?.["openclaw-weixin"] as { autoProvisionAgent?: boolean } | undefined;
+  return section?.autoProvisionAgent === true;
 }
 
 async function sendWeixinOutbound(params: {
@@ -337,6 +344,18 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           if (waitResult.userId) {
             clearStaleAccountsForUserId(normalizedId, waitResult.userId, clearContextTokensForAccount);
           }
+
+          if (isAutoProvisionAgentEnabled(cfg)) {
+            logger.info(
+              `auth.login: autoProvisionAgent enabled, ensuring agent/binding for accountId=${normalizedId}`,
+            );
+            await ensureAgentAndBindingForWeixinAccount(normalizedId);
+          } else {
+            logger.info(
+              "auth.login: autoProvisionAgent disabled for openclaw-weixin, skipping agent/binding provisioning",
+            );
+          }
+
           void triggerWeixinChannelReload();
           log(`\n✅ 与微信连接成功！`);
         } catch (err) {
@@ -442,6 +461,19 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           if (result.userId) {
             clearStaleAccountsForUserId(normalizedId, result.userId, clearContextTokensForAccount);
           }
+
+          const cfg = (params as { cfg?: OpenClawConfig }).cfg;
+          if (isAutoProvisionAgentEnabled(cfg)) {
+            logger.info(
+              `loginWithQrWait: autoProvisionAgent enabled, ensuring agent/binding for accountId=${normalizedId}`,
+            );
+            await ensureAgentAndBindingForWeixinAccount(normalizedId);
+          } else {
+            logger.info(
+              "loginWithQrWait: autoProvisionAgent disabled for openclaw-weixin, skipping agent/binding provisioning",
+            );
+          }
+
           triggerWeixinChannelReload();
           logger.info(`loginWithQrWait: saved account data for accountId=${normalizedId}`);
         } catch (err) {

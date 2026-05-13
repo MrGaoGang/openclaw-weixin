@@ -71,6 +71,102 @@ openclaw channels login --channel openclaw-weixin
 openclaw config set session.dmScope per-account-channel-peer
 ```
 
+## 扫码后自动创建 Agent 与路由绑定
+
+当你希望「每个微信账号都有独立的 Agent 与 workspace」时，可以在 OpenClaw 配置中为微信渠道开启一个可选的自动化开关。
+
+### 开启方式
+
+在 `~/.openclaw/openclaw.json` 中的 `channels.openclaw-weixin` 段增加布尔字段 `autoProvisionAgent`：
+
+```json5
+{
+  channels: {
+    "openclaw-weixin": {
+      enabled: true,
+      autoProvisionAgent: true,
+      // 其他已有配置...
+    },
+  },
+}
+```
+
+> 默认值为 `false`。未显式开启时，插件行为与当前版本完全一致，仅保存扫码得到的 token，不会修改 agents 或 bindings。
+
+### 自动化行为
+
+当 `autoProvisionAgent: true` 且扫码登录成功后（无论是 CLI 的 `channels login`，还是 Control UI 的扫码登录）：
+
+1. 使用规范化账号 ID 作为 agentId，例如将 `6fc91aa794ab@im.bot` 规范化为 `6fc91aa794ab-im-bot`；
+2. 计算并创建工作区目录：
+
+   - 工作区根目录：由插件内的 `resolveStateDir()` 推导，一般为 `~/.openclaw`（或你通过 `OPENCLAW_STATE_DIR` 覆盖后的路径）；
+   - 每个账号的 workspace 目录：`<state-dir>/workspace/<agentId>`，例如 `~/.openclaw/workspace/6fc91aa794ab-im-bot`；
+   - 同时预创建对应的 Agent 目录：`<state-dir>/agents/<agentId>/agent`，例如 `~/.openclaw/agents/6fc91aa794ab-im-bot/agent`。
+
+3. 更新 `agents.list`：若不存在相同 id 的 Agent，则追加一条：
+
+   ```json5
+   {
+     agents: {
+       list: [
+         // ...已有 agent
+         {
+           id: "6fc91aa794ab-im-bot",
+           workspace: "/home/ubuntu/.openclaw/workspace/6fc91aa794ab-im-bot"
+         }
+       ]
+     }
+   }
+   ```
+
+4. 更新顶层 `bindings`：若不存在相同 `(channel, accountId, agentId)` 的绑定，则追加一条，将该微信账号路由到同名 Agent：
+
+   ```json5
+   {
+     bindings: [
+       // ...已有 bindings
+       {
+         agentId: "6fc91aa794ab-im-bot",
+         match: {
+           channel: "openclaw-weixin",
+           accountId: "6fc91aa794ab-im-bot"
+         }
+       }
+     ]
+   }
+   ```
+
+5. 配置写回后，插件会触发一次微信渠道的配置热重载，使新建的 Agent 与绑定立即生效。
+
+### 兼容与幂等性
+
+- 如果你已经在 `agents.list` 中手动创建了同名 Agent，自动化只会检测到已存在并记录 info 级日志，不会重复写入或覆盖已有字段；
+- 如果在 `bindings` 中已经存在同名微信账号绑定到了同一 agentId，自动化会跳过追加并记录 info 级日志；
+- 所有写入失败或文件系统异常会以 warn 级日志输出，不会影响已完成的扫码登录流程。
+
+### 日志与排查
+
+开启自动化后，以下日志有助于排查行为是否按预期执行：
+
+- 成功创建目录和配置时，会输出类似：
+
+  - `ensureAgentAndBindingForWeixinAccount: ensured workspace directory at ...`
+  - `ensureAgentAndBindingForWeixinAccount: adding agent id=... workspace=...`
+  - `ensureAgentAndBindingForWeixinAccount: adding binding for agentId=... channel=openclaw-weixin accountId=...`
+
+- 已存在 Agent 或 binding 时，会输出 “already exists, skipping” 的 info 级日志；
+- 写配置失败时，会输出 warn 级日志，提示具体错误原因。
+
+可以配合以下命令验证结果：
+
+```bash
+openclaw agents list --bindings
+openclaw channels status --probe
+```
+
+确认新的微信账号已经绑定到独立的 Agent 与 workspace。
+
 ## 后端 API 协议
 
 本插件通过 HTTP JSON API 与后端网关通信。二次开发者若需对接自有后端，需实现以下接口。
